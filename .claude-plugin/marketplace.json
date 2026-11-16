@@ -1,6 +1,7 @@
 {
-  "name": "usage-meter",
-  "description": "Claude Code 사용량을 프롬프트 위 색 띠로 보여 주는 모드",
+  "name": "scalper86-mods",
+  "description": "Claude Code로 개발할 때 쓰는 모드 모음",
   "owner": { "name": "scalper86" },
-  "plugins": [{ "name": "usage-meter", "source": "./" }]
+  "plugins": [{ "name": "session-hud", "source": "./" }],
+  "renames": { "usage-meter": "session-hud" }
 }

@@ -1,5 +1,31 @@
 {
-  "name": "usage-meter",
-  "description": "컨텍스트·사용 한도·비용을 프롬프트 위 색 띠로 보여 준다",
-  "types": "./types/index.d.ts"
+  "name": "session-hud",
+  "description": "사용량 띠, 변경 파일 패널, 완료 알림, 세션 예산 경고를 한데 모은 세션 계기판",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "costBudgetUsd": {
+      "type": "number",
+      "title": "세션 예산 (USD)",
+      "description": "세션 비용이 이 금액의 80%와 100%에 닿으면 알립니다. 0이면 끕니다.",
+      "default": 5
+    },
+    "contextWarnPercent": {
+      "type": "number",
+      "title": "컨텍스트 경고 기준 (%)",
+      "description": "컨텍스트 사용률이 이 값을 넘으면 알립니다. 0이면 끕니다.",
+      "default": 80
+    },
+    "notifyAfterSeconds": {
+      "type": "number",
+      "title": "완료 알림 기준 (초)",
+      "description": "이 시간보다 오래 걸린 작업이 끝나면 알립니다. 0이면 끕니다.",
+      "default": 30
+    },
+    "openPaneOnChange": {
+      "type": "boolean",
+      "title": "변경 파일 패널 자동 열기",
+      "description": "세션에서 처음 파일이 바뀔 때 변경 파일 패널을 엽니다.",
+      "default": true
+    }
+  }
 }

@@ -6,8 +6,16 @@ export type Usage = {
   cost?: { usd: number }
 }
 
+export type ChangedFile = {
+  path: string
+  added: number
+  removed: number
+  edits: number
+  isNew: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'usage-meter': { usage: Usage | null }
+    'session-hud': { usage: Usage | null; files: Shaped<ChangedFile[]> }
   }
 }
