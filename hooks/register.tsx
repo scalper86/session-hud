@@ -1202,9 +1202,23 @@ export const register: Register = (on, options) => {
               </Box>
             )}
             <Box flexGrow={1} flexShrink={1} minWidth={0}>
-              <Text weight={isCurrent ? 'semibold' : 'regular'} wrap="wrap">
-                {t.text}
-              </Text>
+              {t.paths.length === 0 ? (
+                <Text weight={isCurrent ? 'semibold' : 'regular'} wrap="wrap">
+                  {t.text}
+                </Text>
+              ) : (
+                // 파일을 바꾼 작업은 작업명을 다른 색으로 칠하고, 누르면 아래 변경 파일을 이 작업 것으로 좁힌다.
+                <Button
+                  key={`files-of:${t.id}`}
+                  label={t.text}
+                  plain
+                  onPress={() => update($, fileFilter, current => (current === t.id ? null : t.id))}
+                >
+                  <Text weight={isCurrent ? 'semibold' : 'regular'} color="suggestion" wrap="wrap">
+                    {t.text}
+                  </Text>
+                </Button>
+              )}
             </Box>
           </Box>
           <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap="sm">
@@ -1217,13 +1231,10 @@ export const register: Register = (on, options) => {
               </Text>
             )}
             {t.paths.length === 0 ? null : (
-              // 이 작업의 변경 안내(파일 수와 줄 수). 누르면 아래 변경 파일을 이 작업 것으로 좁힌다.
-              <Button
-                key={`files-of:${t.id}`}
-                label={`${filter === t.id ? '✓ ' : ''}${turnChanges(t)}`}
-                plain
-                onPress={() => update($, fileFilter, current => (current === t.id ? null : t.id))}
-              />
+              // 이 작업의 변경 안내(파일 수와 줄 수). 필터 중이면 ✓를 붙인다.
+              <Text size="footnote" color="suggestion" dimColor={filter !== t.id}>
+                {`${filter === t.id ? '✓ ' : ''}${turnChanges(t)}`}
+              </Text>
             )}
           </Box>
           {isLive && !isOpen ? running.map(stepRow) : null}

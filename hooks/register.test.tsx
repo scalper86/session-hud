@@ -385,13 +385,15 @@ test('pressing a past task narrows the file list to the files it changed', { opt
     expect(await ui.find({ key: 'open:src/login.ts' })).toBeDefined()
     expect(await ui.find({ key: 'open:src/header.tsx' })).toBeDefined()
 
-    // 작업마다 번호가 붙고, 변경 안내는 파일 수와 줄 수만 보여 준다.
+    // 작업마다 번호가 붙고, 파일을 바꾼 작업은 작업명이 누를 수 있는 버튼이 된다.
+    // 그 아래에는 변경 안내(파일 수와 줄 수)가 글자로 붙는다.
     expect((await ui.find({ type: 'Text', text: /^#1$/ }))?.text).toBe('#1')
-    expect((await ui.find({ key: 'files-of:f1' }))?.props.label).toBe('파일 1개 +1 −1')
+    expect((await ui.find({ key: 'files-of:f1' }))?.props.label).toBe('로그인 고쳐 줘')
+    expect((await ui.find({ type: 'Text', text: /^파일 1개/ }))?.text).toBe('파일 1개 +1 −1')
 
     await ui.press({ key: 'files-of:f1' })
     expect((await ui.find({ type: 'Text', text: /바꾼 파일$/ }))?.text).toBe('#1 작업에서 바꾼 파일')
-    expect((await ui.find({ key: 'files-of:f1' }))?.props.label).toBe('✓ 파일 1개 +1 −1')
+    expect((await ui.find({ type: 'Text', text: /^✓ 파일/ }))?.text).toBe('✓ 파일 1개 +1 −1')
     expect(await ui.find({ key: 'open:src/login.ts' })).toBeDefined()
     expect(await ui.find({ key: 'open:src/header.tsx' })).toBeUndefined()
 
