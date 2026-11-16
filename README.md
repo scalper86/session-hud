@@ -26,3 +26,25 @@ claude plugin install usage-meter --marketplace scalper86/usage_meter
 `/plugin`이 동작하지 않는 데스크톱 앱에서는 프롬프트 입력창 옆 `+` → Plugins → Add marketplace에 `scalper86/usage_meter`를 넣은 뒤 Add plugin을 누릅니다.
 
 설치한 뒤 새로 시작하는 세션부터 띠가 보입니다.
+
+## 업데이트
+
+이 저장소에 새 커밋이 올라오면 그것이 곧 새 버전입니다. 받는 방법은 두 가지입니다.
+
+직접 받기 (셸에서):
+
+```
+claude plugin update usage-meter@usage-meter
+```
+
+터미널 세션의 프롬프트에서는 다음 명령으로도 됩니다.
+
+```
+/plugin marketplace update usage-meter
+```
+
+자동으로 받기: 터미널 세션에서 `/plugin` → Marketplaces → `usage-meter` → Enable auto-update를 한 번 켜 두면, 세션을 시작할 때마다 새 버전을 확인해 받아 옵니다.
+
+업데이트는 새로 시작하는 세션부터 적용됩니다.
+
+GitHub SSH 키가 없는 컴퓨터에서 업데이트가 실패하면 환경 변수 `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`을 설정한 뒤 다시 시도하세요.
