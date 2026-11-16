@@ -6,8 +6,8 @@
     "costBudgetUsd": {
       "type": "number",
       "title": "세션 예산 (USD)",
-      "description": "세션 비용이 이 금액의 80%와 100%에 닿으면 알립니다. 0이면 끕니다.",
-      "default": 5
+      "description": "세션 비용(API 요금 환산)이 이 금액의 80%와 100%에 닿으면 알립니다. 0이면 끕니다(기본). 구독 요금제에서는 실제로 청구되지 않는 금액입니다.",
+      "default": 0
     },
     "contextWarnPercent": {
       "type": "number",

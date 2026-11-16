@@ -45,9 +45,12 @@ declare module 'claude-code' {
       diffs: Shaped<FileDiff[]>
       selected: string | null
       diffTop: number
+      diffMode: 'changes' | 'full'
+      fileText: { path: string; text: string } | null
       turns: Shaped<Turn[]>
       suggestions: Shaped<string[]>
       isSuggesting: boolean
+      filledIdea: number
       isWrapped: boolean
       dismissed: string
     }

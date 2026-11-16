@@ -32,6 +32,12 @@ test('an edit lands in the changed-files pane, on every surface', async ($, on) 
   on('clock.now', () => ({ value: 0 }))
   on('session.usage', () => ({ value: USAGE }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  const read: string[] = []
+  on('fs.read', (_, e) => {
+    read.push(e.path)
+
+    return { value: 'b\nc\nd\n' }
+  })
   on('tool.call', () => ({
     result: {
       filePath: '/repo/src/app.ts',
@@ -67,6 +73,14 @@ test('an edit lands in the changed-files pane, on every surface', async ($, on) 
     expect((await ui.find({ type: 'Text', text: /^−$/ }))?.text).toBe('−')
     expect((await ui.find({ type: 'Text', text: /^c\s*$/ }))?.text?.trim()).toBe('c')
     expect(await ui.find({ key: 'back' })).toBeDefined()
+    // 바뀐 줄만 볼 때는 바뀌지 않은 줄 d가 없고, 파일 전체 보기를 누르면 보인다.
+    expect(await ui.find({ type: 'Text', text: /^d\s*$/ })).toBeUndefined()
+    await ui.press({ key: 'show-whole' })
+    // 엔진이 경로를 운영체제 형식으로 바꿔 넘기므로 끝부분으로 비교한다.
+    expect(read.some(path => path.replaceAll('\\', '/').endsWith('/repo/src/app.ts'))).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^d\s*$/ }))?.text?.trim()).toBe('d')
+    await ui.press({ key: 'show-changes' })
+    expect(await ui.find({ type: 'Text', text: /^d\s*$/ })).toBeUndefined()
     await ui.press({ key: 'back' })
     expect(await ui.find({ type: 'Text', text: /^c\s*$/ })).toBeUndefined()
     await ui.unmount()
@@ -131,9 +145,8 @@ test('the band draws every meter on every surface', async ($, on) => {
 
     expect((await ui.find({ type: 'Text', text: /^85%$/ }))?.text).toBe('85%')
     expect((await ui.find({ type: 'Text', text: /Fable/ }))?.text).toBe('7일(Fable)')
-    expect((await ui.find({ type: 'Text', text: /^\$6\.00$/ }))?.text).toBe('$6.00')
-    expect((await ui.find({ type: 'Text', text: /예산/ }))?.text).toBe('/ 예산 $5')
-    expect((await ui.find({ type: 'Text', text: /^초과$/ }))?.text).toBe('초과')
+    // 비용·예산 항목은 띠에 그리지 않는다.
+    expect(await ui.find({ type: 'Text', text: /API 환산|예산/ })).toBeUndefined()
 
     // 변경 칩을 누르면 변경 파일 패널이 열린다.
     const before = opened.length
@@ -152,7 +165,7 @@ test('the band draws every meter on every surface', async ($, on) => {
   }
 })
 
-test('budget, context and limit warnings fire once, and a Fable window gets its own label', async ($, on) => {
+test('budget, context and limit warnings fire once, and a Fable window gets its own label', { options: { costBudgetUsd: 5 } }, async ($, on) => {
   const toasts: string[] = []
   const notices: string[] = []
   on('command.register', () => ({ value: { command: 'session-hud' } }))

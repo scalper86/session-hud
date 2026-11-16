@@ -25,8 +25,16 @@ const latest = atom({ plugin: 'session-hud', key: 'usage' } as const, null)
 const changed = atom({ plugin: 'session-hud', key: 'files' } as const, [], { shape: 'files-1' })
 // 파일별로 이번 세션에 쌓인 diff(unified-diff 헝크). 최근 파일 일부만 보관한다.
 const diffs = atom({ plugin: 'session-hud', key: 'diffs' } as const, [], { shape: 'diffs-1' })
-// 패널에서 diff를 펼친 파일. null이면 목록을 보여 준다.
+// diff 화면에서 보고 있는 파일. null이면 목록을 보여 준다.
 const selected = atom({ plugin: 'session-hud', key: 'selected' } as const, null)
+// diff 화면에서 맨 위에 보이는 줄. 휠을 굴리면 이 값만 바뀐다.
+const diffTop = atom({ plugin: 'session-hud', key: 'diffTop' } as const, 0)
+// diff 화면의 보기: 바뀐 줄만(changes) 또는 파일 전체(full).
+const diffMode = atom({ plugin: 'session-hud', key: 'diffMode' } as const, 'changes')
+// 파일 전체 보기에서 읽어 온 현재 파일 내용.
+const fileText = atom({ plugin: 'session-hud', key: 'fileText' } as const, null)
+// 마지막으로 그린 diff 화면의 줄 수와 보이는 줄 수. 스크롤 범위를 정할 때 쓴다.
+let diffView = { rows: 0, window: 0 }
 // 작업 타임라인: 요청(턴)마다 도구 호출 단계를 모은다. 최근 것만 보관한다.
 const turns = atom({ plugin: 'session-hud', key: 'turns' } as const, [], { shape: 'turns-1' })
 // 다음 할 일 추천과, 추천을 만드는 중인지.
@@ -34,6 +42,8 @@ const suggestions = atom({ plugin: 'session-hud', key: 'suggestions' } as const,
   shape: 'suggestions-1',
 })
 const isSuggesting = atom({ plugin: 'session-hud', key: 'isSuggesting' } as const, false)
+// 입력창에 넣은 추천의 번호(-1이면 아직 없음). 누른 추천에 ✓를 붙인다.
+const filledIdea = atom({ plugin: 'session-hud', key: 'filledIdea' } as const, -1)
 // 방금 끝난 작업이 일단락됐는지(추천 모델의 판단). 클리어 권장에 쓴다.
 const isWrapped = atom({ plugin: 'session-hud', key: 'isWrapped' } as const, false)
 // "나중에"를 누른 권장. 같은 권장은 컨텍스트가 10%p 더 오를 때까지 다시 띄우지 않는다.
@@ -70,7 +80,7 @@ function summary(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
   if (line === '') return '(이어서 진행)'
 
-  return line.length > 48 ? `${line.slice(0, 47)}…` : line
+  return line.length > 300 ? `${line.slice(0, 299)}…` : line
 }
 
 function clock(ms: number): string {
@@ -88,10 +98,6 @@ function stepMs(ms: number): string {
   return clock(ms)
 }
 
-// diff 화면에서 맨 위에 보이는 줄. 휠을 굴리면 이 값만 바뀐다.
-const diffTop = atom({ plugin: 'session-hud', key: 'diffTop' } as const, 0)
-// 마지막으로 그린 diff의 줄 수와 보이는 줄 수. 스크롤 범위를 정할 때 쓴다.
-let diffView = { rows: 0, window: 0 }
 const DIFF_FILES = 60
 
 // diff를 줄 단위로 펼치고, 줄마다 그 줄이 시작하는 옛·새 줄 번호를 붙인다.
@@ -301,7 +307,7 @@ function detail(u: Usage, files: readonly ChangedFile[], budgetUsd: number, now:
 }
 
 // 설정 값. 0이면 해당 기능을 끈다. register가 불릴 때 채운다.
-let budgetUsd = 5
+let budgetUsd = 0
 let contextWarn = 80
 let notifyAfterMs = 30000
 let shouldOpenPane = true
@@ -312,7 +318,7 @@ let suggestRun = 0
 
 const SUGGEST_SYSTEM = [
   '당신은 개발자가 Claude Code에게 다음에 시킬 일을 짧게 추천하는 도우미입니다.',
-  '최대 3개를 추천합니다. 각 추천은 한국어 한 문장, 40자 이내, Claude에게 하는 요청 형태("…해 줘")로 씁니다.',
+  '3개를 추천합니다(마땅한 것이 적으면 그보다 적게). 가장 먼저 할 만한 것을 첫째로, 추천 순서대로 씁니다. 각 추천은 한국어 한 문장, 40자 이내, Claude에게 하는 요청 형태("…해 줘")로 씁니다.',
   '방금 끝난 작업에서 자연스럽게 이어지는 일(검증, 테스트, 마무리, 남은 부분)을 우선합니다.',
   '번호, 기호, 따옴표, 설명 없이 한 줄에 하나씩만 씁니다. 추천할 것이 없으면 아무것도 쓰지 않습니다.',
   '맨 첫 줄에는 반드시 "상태: 일단락" 또는 "상태: 진행 중"을 씁니다.',
@@ -355,6 +361,7 @@ async function suggest($: EngineInterface, request: string, answer: string): Pro
     })
     if (run !== suggestRun) return
     await update($, suggestions, () => (reply.isAnswered ? parseSuggestions(reply.text) : []))
+    await update($, filledIdea, () => -1)
     await update($, isWrapped, () => reply.isAnswered && parseWrapped(reply.text))
   } catch {
     if (run === suggestRun) await update($, suggestions, () => [])
@@ -529,7 +536,7 @@ async function record(
 }
 
 export const register: Register = (on, options) => {
-  budgetUsd = setting(options.costBudgetUsd, 5)
+  budgetUsd = setting(options.costBudgetUsd, 0)
   contextWarn = setting(options.contextWarnPercent, 80)
   notifyAfterMs = setting(options.notifyAfterSeconds, 30) * 1000
   shouldOpenPane = options.openPaneOnChange !== false
@@ -605,6 +612,7 @@ export const register: Register = (on, options) => {
       await update($, turns, list => [...list, turn].slice(-TURNS_KEPT))
       suggestRun += 1
       await update($, suggestions, () => [])
+      await update($, filledIdea, () => -1)
       await update($, isSuggesting, () => false)
       await update($, isWrapped, () => false)
     }
@@ -632,6 +640,7 @@ export const register: Register = (on, options) => {
       suggestRun += 1
       await update($, turns, () => [])
       await update($, suggestions, () => [])
+      await update($, filledIdea, () => -1)
       await update($, isSuggesting, () => false)
       await update($, isWrapped, () => false)
       await update($, dismissed, () => '')
@@ -720,8 +729,6 @@ export const register: Register = (on, options) => {
       await update($, dismissed, () => advice?.key ?? '')
       await $.command.run({ command: kind })
     }
-    const costLevel: Level | undefined =
-      u.cost === undefined || budgetUsd <= 0 ? undefined : level((u.cost.usd / budgetUsd) * 100)
 
     // 막대: 터미널은 가는 선(━), 그 밖의 화면은 두꺼운 칸(█)으로 그린다.
     // 빈 칸은 반투명 회색으로 칠해 밝은·어두운 테마 어디서나 트랙이 보이게 한다.
@@ -764,23 +771,6 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
-        {u.cost === undefined ? null : (
-          // 세션 비용은 API 요금으로 환산한 값이다. 구독 요금제에서는 따로 청구되지 않는다.
-          <Box key="cost" flexDirection="row" alignItems="center" columnGap="sm" flexShrink={0}>
-            <Text weight="medium">API 환산</Text>
-            <Text weight="bold" tabular color={costLevel ?? 'text'}>
-              {`$${u.cost.usd.toFixed(2)}`}
-            </Text>
-            {budgetUsd > 0 ? (
-              <Text dimColor tabular size="footnote">{`/ 예산 $${formatUsd(budgetUsd)}`}</Text>
-            ) : null}
-            {budgetUsd > 0 && u.cost.usd >= budgetUsd ? (
-              <Text color="error" weight="semibold" size="footnote">
-                초과
-              </Text>
-            ) : null}
-          </Box>
-        )}
         {files.length === 0 ? null : (
           <Box key="files" flexDirection="row" alignItems="center" columnGap="sm" flexShrink={0}>
             <Button
@@ -834,27 +824,82 @@ export const register: Register = (on, options) => {
     const files = await read($, changed)
     const sum = totals(files)
     const open = await read($, selected)
-
-    // 파일 하나를 고르면 그 파일의 diff를 펼친다.
     const file = open === null ? undefined : files.find(f => f.path === open)
     if (open !== null && file !== undefined) {
       const entry = (await read($, diffs)).find(d => d.path === open)
+      const changes = entry === undefined ? [] : diffRows(entry.diff)
+      const mode = await read($, diffMode)
+      const whole = await read($, fileText)
       const slash = open.lastIndexOf('/')
-      // 머리줄(목록 버튼·파일 이름·경로)은 고정하고, 그 아래 diff 줄만 직접 스크롤한다.
-      // 트리가 창 높이를 넘지 않으니 패널 자체는 움직이지 않고, 휠은 ui.scroll 훅이 받는다.
-      const rows = entry === undefined ? [] : diffRows(entry.diff)
-      const window = Math.max(3, e.props.scroll.bodyRows - (slash < 0 ? 3 : 4) - (file.edits > 1 ? 1 : 0))
-      const maxTop = Math.max(0, rows.length - window)
+      const isWhole = mode === 'full' && whole !== null && whole.path === open
+
+      // 보여 줄 줄을 만든다.
+      //  - 바뀐 줄만: 더한 줄·지운 줄만 남기고, 그 사이 같은 줄은 "⋯" 한 줄로 접는다.
+      //    접힌 자리마다 [전체에서 보기] 버튼이 있어, 누르면 파일 전체를 그 위치부터 보여 준다.
+      //  - 파일 전체: 지금 파일 내용 전체. 이번 세션에 더한 줄은 초록, 지운 줄은 그 자리에 빨강으로 끼운다.
+      type View = {
+        kind: 'add' | 'remove' | 'context' | 'gap'
+        old?: number
+        neu?: number
+        text: string
+        at?: number
+      }
+      const view: View[] = []
+      if (isWhole) {
+        const added = new Set<number>()
+        const removedAt = new Map<number, string[]>()
+        for (const r of changes) {
+          if (r.kind === 'add') added.add(r.neu)
+          if (r.kind === 'remove') removedAt.set(r.neu, [...(removedAt.get(r.neu) ?? []), r.text.slice(1)])
+        }
+        const lines = whole.text.replace(/\n$/, '').split('\n')
+        lines.forEach((text, i) => {
+          const n = i + 1
+          for (const gone of removedAt.get(n) ?? []) view.push({ kind: 'remove', text: gone })
+          view.push({ kind: added.has(n) ? 'add' : 'context', neu: n, text })
+        })
+      } else {
+        let lastWasChange = false
+        for (const r of changes) {
+          if (r.kind === 'add' || r.kind === 'remove') {
+            if (!lastWasChange) view.push({ kind: 'gap', text: '', at: r.neu })
+            view.push({ kind: r.kind, old: r.kind === 'remove' ? r.old : undefined, neu: r.kind === 'add' ? r.neu : undefined, text: r.text.slice(1) })
+            lastWasChange = true
+          } else {
+            lastWasChange = false
+          }
+        }
+      }
+
+      const head = isWhole ? 3 : 3
+      const window = Math.max(3, e.props.scroll.bodyRows - head - (slash < 0 ? 0 : 1))
+      const maxTop = Math.max(0, view.length - window)
       const top = Math.min(maxTop, Math.max(0, await read($, diffTop)))
-      diffView = { rows: rows.length, window }
-      // 줄 번호 칸 너비: 보이는 줄 가운데 가장 큰 번호에 맞춘다.
-      const numWidth = Math.max(
-        2,
-        ...rows.slice(top, top + window).map(r => String(Math.max(r.old, r.neu)).length),
-      )
+      diffView = { rows: view.length, window }
+      const shown = view.slice(top, top + window)
+      const numWidth = Math.max(2, ...shown.map(r => String(Math.max(r.old ?? 0, r.neu ?? 0)).length))
+
       const back = async () => {
         await update($, diffTop, () => 0)
+        await update($, diffMode, () => 'changes')
         await update($, selected, () => null)
+      }
+      // 파일 전체를 읽어 와서, 누른 위치가 보이도록 그 조금 위부터 보여 준다.
+      const showWhole = async (line: number) => {
+        const abs = /^([A-Za-z]:)?\//.test(open) ? open : `${cwd.replaceAll('\\', '/').replace(/\/+$/, '')}/${open}`
+        const text = await $.fs.read(abs).catch(() => null)
+        if (typeof text !== 'string') {
+          $.ui.toast('파일을 읽지 못했습니다. 지워졌거나 옮겨졌을 수 있습니다.')
+          return
+        }
+        await update($, fileText, () => ({ path: open, text }))
+        await update($, diffMode, () => 'full')
+        // 지운 줄이 끼어 드는 만큼 조금 넉넉히 위에서 시작한다.
+        await update($, diffTop, () => Math.max(0, line - 4))
+      }
+      const showChanges = async () => {
+        await update($, diffTop, () => 0)
+        await update($, diffMode, () => 'changes')
       }
 
       return (
@@ -872,37 +917,46 @@ export const register: Register = (on, options) => {
                 {`−${file.removed}`}
               </Text>
             </Box>
+            <Box flexShrink={0}>
+              {isWhole ? (
+                <Button key="show-changes" label="바뀐 줄만 보기" hotkey="c" onPress={showChanges} />
+              ) : (
+                <Button key="show-whole" label="파일 전체 보기" hotkey="f" onPress={() => showWhole(1)} />
+              )}
+            </Box>
           </Box>
           <Box flexDirection="row" columnGap="sm">
             <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-              {slash < 0 ? null : (
-                <Text dimColor size="caption" wrap="truncate-start">
-                  {open.slice(0, slash + 1)}
-                </Text>
-              )}
+              <Text dimColor size="caption" wrap="truncate-start">
+                {slash < 0 ? (isWhole ? '파일 전체' : '바뀐 줄만') : `${open.slice(0, slash + 1)} · ${isWhole ? '파일 전체' : '바뀐 줄만'}`}
+              </Text>
             </Box>
-            {rows.length > window ? (
+            {view.length > window ? (
               <Box flexShrink={0}>
                 <Text dimColor tabular size="caption">
-                  {`${top + 1}–${Math.min(rows.length, top + window)} / ${rows.length}줄`}
+                  {`${top + 1}–${Math.min(view.length, top + window)} / ${view.length}줄`}
                 </Text>
               </Box>
             ) : null}
           </Box>
-          {file.edits > 1 ? (
-            <Text dimColor size="caption">{`이번 세션의 수정 ${file.edits}회를 순서대로 모았습니다.`}</Text>
-          ) : null}
           <Box flexDirection="column" height={window} overflow="hidden">
-            {rows.length === 0 ? <Text dimColor>보관된 변경 내용이 없습니다.</Text> : null}
-            {rows.slice(top, top + window).map((r, i) => {
+            {view.length === 0 ? <Text dimColor>보관된 변경 내용이 없습니다.</Text> : null}
+            {shown.map((r, i) => {
               const key = `row:${top + i}`
-              // 헝크 머리(@@)는 줄 번호만 알려 주는 얇은 구분선으로 그린다.
-              if (r.kind === 'hunk') {
+              // 접힌 자리: 같은 줄을 숨긴 표시와, 그 위치부터 파일 전체를 보는 버튼.
+              if (r.kind === 'gap') {
                 return (
-                  <Box key={key} flexDirection="row" height={1} overflow="hidden" backgroundColor={HUNK_BG}>
-                    <Text dimColor tabular wrap="truncate-end" backgroundColor={HUNK_BG}>
-                      {` ⋯ ${r.neu}행부터 `.padEnd(e.props.bodyColumns, ' ')}
+                  <Box key={key} flexDirection="row" alignItems="center" columnGap="sm" height={1} backgroundColor={HUNK_BG}>
+                    <Text dimColor tabular size="footnote" backgroundColor={HUNK_BG}>
+                      {` ⋯ ${r.at ?? 1}행 근처`}
                     </Text>
+                    <Button
+                      key={`whole-at:${top + i}`}
+                      label="전체에서 보기"
+                      plain
+                      dimColor
+                      onPress={() => showWhole(r.at ?? 1)}
+                    />
                   </Box>
                 )
               }
@@ -910,35 +964,27 @@ export const register: Register = (on, options) => {
               const isRemove = r.kind === 'remove'
               const bg = isAdd ? ADD_BG : isRemove ? REMOVE_BG : undefined
               const mark = isAdd ? '+' : isRemove ? '−' : ' '
-              const oldNo = isAdd || r.kind === 'other' ? '' : String(r.old)
-              const newNo = isRemove || r.kind === 'other' ? '' : String(r.neu)
-              const text = r.kind === 'other' ? r.text : r.text.slice(1)
 
               return (
                 <Box key={key} flexDirection="row" height={1} overflow="hidden" backgroundColor={bg}>
                   <Box width={numWidth} flexShrink={0} justifyContent="flex-end">
                     <Text dimColor tabular mono size="footnote" backgroundColor={bg}>
-                      {oldNo}
+                      {r.old === undefined ? '' : String(r.old)}
                     </Text>
                   </Box>
                   <Box width={numWidth + 1} flexShrink={0} justifyContent="flex-end">
                     <Text dimColor tabular mono size="footnote" backgroundColor={bg}>
-                      {newNo}
+                      {r.neu === undefined ? '' : String(r.neu)}
                     </Text>
                   </Box>
                   <Box width={3} flexShrink={0} justifyContent="center">
-                    <Text
-                      mono
-                      weight="bold"
-                      color={isAdd ? 'success' : isRemove ? 'error' : undefined}
-                      backgroundColor={bg}
-                    >
+                    <Text mono weight="bold" color={isAdd ? 'success' : isRemove ? 'error' : undefined} backgroundColor={bg}>
                       {mark}
                     </Text>
                   </Box>
                   <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-                    <Text mono wrap="truncate-end" backgroundColor={bg}>
-                      {(text === '' ? ' ' : text).padEnd(e.props.bodyColumns, ' ')}
+                    <Text mono wrap="truncate-end" dimColor={r.kind === 'context'} backgroundColor={bg}>
+                      {(r.text === '' ? ' ' : r.text).padEnd(e.props.bodyColumns, ' ')}
                     </Text>
                   </Box>
                 </Box>
@@ -950,21 +996,48 @@ export const register: Register = (on, options) => {
     }
 
     // 목록 화면: 위쪽은 작업(진행 상황·다음 할 일·지난 작업), 아래쪽은 변경 파일.
-    // 두 구역의 높이를 나눠 고정해, 패널 하나를 위아래로 나눈 것처럼 보이게 한다.
-    const body = Math.max(12, e.props.scroll.bodyRows)
-    const workRows = Math.max(7, Math.floor(body * 0.55))
-    const filesRows = Math.max(3, body - workRows - 1)
-
+    // 패널이 작아도 내용을 잘라 내거나 숨기지 않는다. 모두 그리고, 넘치면 패널을 스크롤한다.
     const allTurns = await read($, turns)
     const last = allTurns[allTurns.length - 1]
-    const past = allTurns.slice(0, -1).reverse().slice(0, 3)
+    const past = allTurns.slice(0, -1).reverse()
+    const isRunning = last !== undefined && last.ms === undefined
     const ideas = await read($, suggestions)
     const isThinking = await read($, isSuggesting)
-    const ideaRows = 1 + Math.max(1, ideas.length)
-    const pastRows = past.length === 0 ? 0 : 1 + past.length
-    const stepRows = Math.max(2, workRows - 2 - ideaRows - pastRows)
-    const steps = last === undefined ? [] : last.steps.slice(-stepRows)
-    const isRunning = last !== undefined && last.ms === undefined
+    const filled = await read($, filledIdea)
+
+    // 반응형: 패널 폭에 맞춰 배치만 바꾸고, 보여 주는 내용은 줄이지 않는다.
+    //  - wide(72칸 이상): 추천을 칩으로 한 줄에 나란히, 넘치면 다음 줄로
+    //  - list(72칸 미만): 번호를 붙여 한 줄에 하나씩, 긴 추천은 줄을 바꿔 전부 보인다
+    //  - 좁을 때(40칸 미만): 단계의 걸린 시간을 대상 아래 줄로 내린다
+    const cols = e.props.bodyColumns
+    const isWidget = e.props.placement === 'widget'
+    const isNarrow = cols < 40
+    const layout: 'wide' | 'list' = cols >= 72 ? 'wide' : 'list'
+    const showPast = past.length > 0
+
+    const fillIdea = async (i: number, idea: string) => {
+      const done = await $.prompt.fill({ text: idea, mode: 'replace' }).catch(() => undefined)
+      if (done !== undefined) await update($, filledIdea, () => i)
+    }
+
+    // 위젯(데스크톱 앱의 작은 창)에서는 한눈에 볼 것만: 상태 한 줄과 첫 추천.
+    if (isWidget) {
+      return (
+        <Box flexDirection="column">
+          <Text weight="semibold" wrap="truncate-end">
+            {last === undefined ? '작업 기록 없음' : `${isRunning ? '● 진행 중' : '✓ 끝남'} · ${last.text}`}
+          </Text>
+          {ideas[0] === undefined ? null : (
+            <Text dimColor wrap="truncate-end">{`→ ${ideas[0]}`}</Text>
+          )}
+          {files.length === 0 ? null : (
+            <Text dimColor size="caption">{`변경 파일 ${files.length}개 +${sum.added} −${sum.removed}`}</Text>
+          )}
+        </Box>
+      )
+    }
+
+    const steps = last === undefined ? [] : last.steps
 
     const icon = (status: Step['status']) =>
       status === 'run' ? (
@@ -984,92 +1057,133 @@ export const register: Register = (on, options) => {
             ? `■ 중단됨 · ${clock(last.ms ?? 0)}`
             : `✓ 끝남 · ${clock(last.ms ?? 0)} · ${last.steps.length}단계`
 
-    const listed = files.slice(0, Math.max(1, filesRows - 1))
+    const listed = files
     const addWidth = Math.max(2, ...listed.map(f => String(f.added).length)) + 1
     const removeWidth = Math.max(2, ...listed.map(f => String(f.removed).length)) + 1
 
     return (
       <Box flexDirection="column">
-        <Box key="work" flexDirection="column" height={workRows} overflow="hidden">
+        <Box key="work" flexDirection="column">
           {last === undefined ? (
             <Text dimColor>아직 기록된 작업이 없습니다.</Text>
           ) : (
-            <Box flexDirection="row" alignItems="center" columnGap="sm">
-              <Box flexShrink={0}>
-                <Text weight="semibold" color={isRunning ? 'warning' : last.reason === 'aborted' ? 'error' : 'success'}>
-                  {turnState}
-                </Text>
-              </Box>
-              <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-                <Text dimColor wrap="truncate-end">
-                  {last.text}
-                </Text>
-              </Box>
+            <Box flexDirection="column">
+              <Text weight="semibold" color={isRunning ? 'warning' : last.reason === 'aborted' ? 'error' : 'success'}>
+                {turnState}
+              </Text>
+              <Text dimColor wrap="wrap">
+                {last.text}
+              </Text>
             </Box>
           )}
-          {steps.map(s => (
-            <Box key={`step:${s.id}`} flexDirection="row" alignItems="center" columnGap="sm">
-              <Box width={2} flexShrink={0}>
-                {icon(s.status)}
-              </Box>
-              <Box width={7} flexShrink={0} overflow="hidden">
-                <Text weight="medium" size="footnote" wrap="truncate-end">
-                  {s.tool}
-                </Text>
-              </Box>
-              <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-                <Text dimColor size="footnote" wrap="truncate-start">
-                  {s.target}
-                </Text>
-              </Box>
-              <Box flexShrink={0}>
-                <Text dimColor tabular size="caption">
-                  {s.status === 'run' ? '실행 중' : stepMs(s.ms ?? 0)}
-                </Text>
-              </Box>
-            </Box>
-          ))}
+          {steps.map(s => {
+            const time = s.status === 'run' ? '실행 중' : stepMs(s.ms ?? 0)
 
-          <Box key="ideas-head" flexDirection="row" marginTop={1} columnGap="sm">
+            return (
+              <Box key={`step:${s.id}`} flexDirection="row" alignItems="flex-start" columnGap="sm">
+                <Box width={2} flexShrink={0}>
+                  {icon(s.status)}
+                </Box>
+                <Box width={7} flexShrink={0}>
+                  <Text weight="medium" size="footnote" wrap="wrap">
+                    {s.tool}
+                  </Text>
+                </Box>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Text dimColor size="footnote" wrap="wrap">
+                    {s.target === '' ? '–' : s.target}
+                  </Text>
+                  {isNarrow ? (
+                    <Text dimColor tabular size="caption">
+                      {time}
+                    </Text>
+                  ) : null}
+                </Box>
+                {isNarrow ? null : (
+                  <Box flexShrink={0}>
+                    <Text dimColor tabular size="caption">
+                      {time}
+                    </Text>
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+
+          <Box key="ideas-head" flexDirection="row" marginTop={1} columnGap="sm" alignItems="center">
             <Text weight="semibold">다음 할 일 추천</Text>
             {isThinking ? (
+              <Text color="warning" size="caption">
+                ● 만드는 중…
+              </Text>
+            ) : ideas.length > 0 && !isNarrow ? (
               <Text dimColor size="caption">
-                만드는 중…
+                {`누르거나 1–${ideas.length} 키로 입력창에 넣기`}
               </Text>
             ) : null}
           </Box>
           {ideas.length === 0 ? (
-            <Text dimColor size="footnote">
+            <Text dimColor size="footnote" wrap="wrap">
               {isThinking
                 ? '방금 끝난 작업을 보고 추천을 고르고 있습니다.'
                 : shouldSuggest
                   ? '작업이 끝나면 여기에 추천이 나옵니다.'
                   : '설정에서 추천이 꺼져 있습니다.'}
             </Text>
-          ) : (
-            ideas.map((idea, i) => (
-              <Box key={`idea:${i}`} flexDirection="row" columnGap="sm">
-                <Text color="success">→</Text>
+          ) : layout === 'wide' ? (
+            // 넓을 때: 추천을 칩 버튼으로 나란히 놓고, 넘치면 다음 줄로 넘긴다.
+            <Box key="ideas" flexDirection="row" flexWrap="wrap" columnGap="sm" rowGap="xs">
+              {ideas.map((idea, i) => (
                 <Button
                   key={`idea-${i}`}
-                  label={idea}
-                  plain
+                  label={filled === i ? `✓ ${idea}` : i === 0 ? `★ 1순위  ${idea}` : `${i + 1}순위  ${idea}`}
                   hotkey={String(i + 1)}
-                  onPress={async () => {
-                    await $.prompt.fill({ text: idea, mode: 'replace' })
-                  }}
+                  variant={i === 0 ? 'primary' : 'secondary'}
+                  onPress={() => fillIdea(i, idea)}
                 />
+              ))}
+            </Box>
+          ) : (
+            // 보통·좁은 폭: 번호를 붙여 한 줄에 하나씩. 긴 추천도 줄을 바꿔 전부 보인다.
+            ideas.map((idea, i) => (
+              <Box key={`idea:${i}`} flexDirection="row" alignItems="flex-start" columnGap="sm">
+                <Box width={2} flexShrink={0}>
+                  <Text
+                    weight="bold"
+                    color={filled === i ? 'success' : i === 0 ? 'warning' : undefined}
+                    dimColor={filled !== i && i > 0}
+                  >
+                    {filled === i ? '✓' : String(i + 1)}
+                  </Text>
+                </Box>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+                  {i === 0 && filled !== 0 ? (
+                    <Text color="warning" weight="semibold" size="caption">
+                      ★ 가장 추천
+                    </Text>
+                  ) : null}
+                  <Button key={`idea-${i}`} plain hotkey={String(i + 1)} label={idea} onPress={() => fillIdea(i, idea)}>
+                    <Text wrap="wrap" weight={i === 0 ? 'semibold' : 'regular'}>
+                      {idea}
+                    </Text>
+                  </Button>
+                  {filled === i ? (
+                    <Text dimColor size="caption">
+                      입력창에 넣음
+                    </Text>
+                  ) : null}
+                </Box>
               </Box>
             ))
           )}
 
-          {past.length === 0 ? null : (
+          {!showPast ? null : (
             <Box key="past-head" marginTop={1}>
               <Text weight="semibold">지난 작업</Text>
             </Box>
           )}
-          {past.map(t => (
-            <Box key={`turn:${t.id}`} flexDirection="row" alignItems="center" columnGap="sm">
+          {(showPast ? past : []).map(t => (
+            <Box key={`turn:${t.id}`} flexDirection="row" alignItems="flex-start" columnGap="sm">
               <Box width={2} flexShrink={0}>
                 {t.reason === 'aborted' || t.reason === 'error' ? (
                   <Text color="error">■</Text>
@@ -1077,12 +1191,10 @@ export const register: Register = (on, options) => {
                   <Text dimColor>✓</Text>
                 )}
               </Box>
-              <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-                <Text size="footnote" wrap="truncate-end">
+              <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text size="footnote" wrap="wrap">
                   {t.text}
                 </Text>
-              </Box>
-              <Box flexShrink={0}>
                 <Text dimColor tabular size="caption">
                   {`${clock(t.ms ?? 0)} · ${t.steps.length}단계${t.files > 0 ? ` · 파일 ${t.files}` : ''}`}
                 </Text>
@@ -1097,7 +1209,7 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>
 
-        <Box key="files" flexDirection="column" height={filesRows} overflow="hidden">
+        <Box key="files" flexDirection="column">
           <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap="md">
             <Box flexDirection="row" alignItems="center" columnGap="sm">
               <Text weight="semibold">변경 파일</Text>
@@ -1113,6 +1225,7 @@ export const register: Register = (on, options) => {
                 </Text>
               )}
             </Box>
+            <Box flexDirection="row" columnGap="sm" flexShrink={0}>
             {files.length === 0 ? null : (
               <Button
                 key="clear"
@@ -1121,9 +1234,11 @@ export const register: Register = (on, options) => {
                   await update($, changed, () => [])
                   await update($, diffs, () => [])
                   await update($, selected, () => null)
+                  await update($, fileText, () => null)
                 }}
               />
             )}
+            </Box>
           </Box>
           {files.length === 0 ? <Text dimColor size="footnote">아직 변경된 파일이 없습니다.</Text> : null}
           {listed.map(f => {
@@ -1131,6 +1246,12 @@ export const register: Register = (on, options) => {
             const slash = f.path.lastIndexOf('/')
             const name = f.path.slice(slash + 1)
             const dir = slash < 0 ? '' : f.path.slice(0, slash + 1)
+
+            const openDiff = async () => {
+              await update($, diffTop, () => 0)
+              await update($, diffMode, () => 'changes')
+              await update($, selected, () => f.path)
+            }
 
             return (
               <Box key={f.path} flexDirection="row" alignItems="center" columnGap="sm">
@@ -1147,10 +1268,7 @@ export const register: Register = (on, options) => {
                     key={`open:${f.path}`}
                     label={f.path}
                     plain
-                    onPress={async () => {
-                      await update($, diffTop, () => 0)
-                      await update($, selected, () => f.path)
-                    }}
+                    onPress={openDiff}
                   >
                     <Text dimColor>{dir}</Text>
                     <Text dimColor={isOutside}>{name}</Text>
