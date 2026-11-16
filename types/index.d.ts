@@ -33,7 +33,7 @@ export type Turn = {
   startedAt: number
   ms?: number
   reason?: string
-  files: number
+  paths: string[]
   steps: Step[]
 }
 
@@ -48,6 +48,8 @@ declare module 'claude-code' {
       diffMode: 'changes' | 'full'
       fileText: { path: string; text: string } | null
       turns: Shaped<Turn[]>
+      openTurns: Shaped<string[]>
+      fileFilter: string | null
       suggestions: Shaped<string[]>
       isSuggesting: boolean
       filledIdea: number

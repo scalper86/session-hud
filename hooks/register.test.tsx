@@ -243,10 +243,11 @@ test('the work pane shows the steps of a turn and next-step ideas that fill the 
       usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
     },
   }))
-  on('prompt.fill', (_, e) => {
+  // 추천을 고르면 입력창에 넣지 않고 바로 메시지로 보낸다.
+  on('prompt.submit', (_, e) => {
     filled.push(e.text)
 
-    return { isFilled: true }
+    return { text: e.text }
   })
 
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
@@ -264,11 +265,133 @@ test('the work pane shows the steps of a turn and next-step ideas that fill the 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
+    // 큰 틀만 보인다: 상태와 갈래별 개수. 세부 단계는 접혀 있다가 누르면 펼쳐진다.
+    expect((await ui.find({ type: 'Text', text: /^✓ 끝남/ }))?.text).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^명령 1$/ }))?.text).toBe('명령 1')
+    expect(await ui.find({ type: 'Text', text: /^npm test$/ })).toBeUndefined()
+    await ui.press({ key: 'toggle:t1' })
     expect((await ui.find({ type: 'Text', text: /^npm test$/ }))?.text).toBe('npm test')
-    expect((await ui.find({ type: 'Text', text: /^✓ 끝남/ }))?.text).toContain('1단계')
+    await ui.press({ key: 'toggle:t1' })
     expect(await ui.find({ key: 'idea-0' })).toBeDefined()
     await ui.press({ key: 'idea-1' })
     await ui.unmount()
   }
   expect(filled).toContain('변경 사항을 커밋해 줘')
+})
+
+// 병렬 처리: 한 요청 안에서 도구 여러 개가 동시에 돌 때.
+test('parallel tool calls show as running together, then fold into one summary', { options: { suggestNextSteps: false } }, async ($, on) => {
+  let release = () => {}
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  let now = 0
+  on('clock.now', () => ({ value: (now += 100) }))
+  on('command.register', () => ({ value: { command: 'session-hud' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'client' as const } }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  // 모든 도구가 gate가 열릴 때까지 끝나지 않는다: 셋이 동시에 실행 중인 상태를 만든다.
+  on('tool.call', async () => {
+    await gate
+
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: '테스트와 빌드를 같이 돌려 줘', turnId: 'p1' })
+  const calls = [
+    $.tool.call({ tool: 'Bash', command: 'npm test' }),
+    $.tool.call({ tool: 'Bash', command: 'npm run build' }),
+    $.tool.call({ tool: 'Grep', pattern: 'TODO' }),
+    // 하위 에이전트 안의 호출은 메인 작업 목록에 넣지 않는다.
+    $.tool.call({ tool: 'Bash', command: 'echo sub', agentId: 'a1' }),
+  ]
+  for (let i = 0; i < 200; i += 1) await Promise.resolve()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    // 접혀 있어도 지금 도는 단계는 보이고, 동시에 몇 개 도는지 알려 준다.
+    expect((await ui.find({ type: 'Text', text: /동시 실행 중/ }))?.text).toBe('● 3개 동시 실행 중')
+    expect((await ui.find({ type: 'Text', text: /^npm test$/ }))?.text).toBe('npm test')
+    expect((await ui.find({ type: 'Text', text: /^npm run build$/ }))?.text).toBe('npm run build')
+    expect((await ui.find({ type: 'Text', text: /^TODO$/ }))?.text).toBe('TODO')
+    expect(await ui.find({ type: 'Text', text: /^echo sub$/ })).toBeUndefined()
+    await ui.unmount()
+  }
+
+  release()
+  await Promise.all(calls)
+  await $.turn.complete({ answer: '둘 다 통과했습니다.', durationMs: 4200, isAborted: false, turnId: 'p1', reason: 'answer' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    // 끝나면 큰 틀만: 상태 한 줄과 갈래별 개수. 실행 중 표시는 사라진다.
+    expect((await ui.find({ type: 'Text', text: /^✓ 끝남/ }))?.text).toBe('✓ 끝남 · 4초')
+    expect((await ui.find({ type: 'Text', text: /^명령 2/ }))?.text).toBe('명령 2 · 검색 1')
+    expect(await ui.find({ type: 'Text', text: /동시 실행 중/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^npm test$/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+// 지난 작업을 누르면 그 작업에서 바꾼 파일만 보여 준다.
+test('pressing a past task narrows the file list to the files it changed', { options: { suggestNextSteps: false } }, async ($, on) => {
+  let now = 0
+  on('clock.now', () => ({ value: (now += 100) }))
+  on('command.register', () => ({ value: { command: 'session-hud' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'client' as const } }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('tool.call', (_, e) => {
+    const filePath = (e as { file_path?: string }).file_path ?? '/repo/x.ts'
+
+    return {
+      result: {
+        filePath,
+        oldString: 'a',
+        newString: 'b',
+        originalFile: 'a',
+        structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+        userModified: false,
+        replaceAll: false,
+      },
+    }
+  })
+
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  const edit = (file_path: string) => $.tool.call({ tool: 'Edit', file_path, old_string: 'a', new_string: 'b' })
+
+  await $.turn.start({ text: '로그인 고쳐 줘', turnId: 'f1' })
+  await edit('/repo/src/login.ts')
+  await $.turn.complete({ answer: '고쳤습니다.', durationMs: 1000, isAborted: false, turnId: 'f1', reason: 'answer' })
+  await $.turn.start({ text: '헤더 정리해 줘', turnId: 'f2' })
+  await edit('/repo/src/header.tsx')
+  await $.turn.complete({ answer: '정리했습니다.', durationMs: 1000, isAborted: false, turnId: 'f2', reason: 'answer' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    expect(await ui.find({ key: 'open:src/login.ts' })).toBeDefined()
+    expect(await ui.find({ key: 'open:src/header.tsx' })).toBeDefined()
+
+    await ui.press({ key: 'files-of:f1' })
+    expect((await ui.find({ type: 'Text', text: /바꾼 파일$/ }))?.text).toBe('이 작업에서 바꾼 파일')
+    expect(await ui.find({ key: 'open:src/login.ts' })).toBeDefined()
+    expect(await ui.find({ key: 'open:src/header.tsx' })).toBeUndefined()
+
+    await ui.press({ key: 'files-all' })
+    expect(await ui.find({ key: 'open:src/header.tsx' })).toBeDefined()
+    await ui.unmount()
+  }
 })

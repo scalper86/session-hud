@@ -36,13 +36,17 @@ const fileText = atom({ plugin: 'session-hud', key: 'fileText' } as const, null)
 // 마지막으로 그린 diff 화면의 줄 수와 보이는 줄 수. 스크롤 범위를 정할 때 쓴다.
 let diffView = { rows: 0, window: 0 }
 // 작업 타임라인: 요청(턴)마다 도구 호출 단계를 모은다. 최근 것만 보관한다.
-const turns = atom({ plugin: 'session-hud', key: 'turns' } as const, [], { shape: 'turns-1' })
+const turns = atom({ plugin: 'session-hud', key: 'turns' } as const, [], { shape: 'turns-2' })
+// 변경 파일 목록을 이 요청(턴)에서 바꾼 파일로만 좁혀 보여 줄 때의 턴. null이면 전체.
+const fileFilter = atom({ plugin: 'session-hud', key: 'fileFilter' } as const, null)
 // 다음 할 일 추천과, 추천을 만드는 중인지.
 const suggestions = atom({ plugin: 'session-hud', key: 'suggestions' } as const, [], {
   shape: 'suggestions-1',
 })
 const isSuggesting = atom({ plugin: 'session-hud', key: 'isSuggesting' } as const, false)
-// 입력창에 넣은 추천의 번호(-1이면 아직 없음). 누른 추천에 ✓를 붙인다.
+// 세부 단계를 펼쳐 둔 요청(턴)들. 기본은 접어 두고 큰 틀만 보여 준다.
+const openTurns = atom({ plugin: 'session-hud', key: 'openTurns' } as const, [], { shape: 'open-turns-1' })
+// 보낸 추천의 번호(-1이면 아직 없음). 누른 추천에 ✓를 붙인다.
 const filledIdea = atom({ plugin: 'session-hud', key: 'filledIdea' } as const, -1)
 // 방금 끝난 작업이 일단락됐는지(추천 모델의 판단). 클리어 권장에 쓴다.
 const isWrapped = atom({ plugin: 'session-hud', key: 'isWrapped' } as const, false)
@@ -74,6 +78,38 @@ function toolName(tool: string): string {
   const parts = tool.split('__')
 
   return parts.length >= 3 ? (parts[parts.length - 1] ?? tool) : tool
+}
+
+// 도구를 큰 갈래로 묶는다. 작업 목록에는 갈래별 개수만 보여 준다.
+const STEP_KIND: Record<string, string> = {
+  Edit: '수정',
+  MultiEdit: '수정',
+  Write: '수정',
+  NotebookEdit: '수정',
+  Bash: '명령',
+  PowerShell: '명령',
+  Read: '읽기',
+  LS: '읽기',
+  NotebookRead: '읽기',
+  Grep: '검색',
+  Glob: '검색',
+  WebFetch: '웹',
+  WebSearch: '웹',
+  Agent: '에이전트',
+  Task: '에이전트',
+}
+const KIND_ORDER = ['수정', '명령', '읽기', '검색', '웹', '에이전트', '기타']
+
+function stepKinds(steps: readonly Step[]): string {
+  const count = new Map<string, number>()
+  for (const s of steps) {
+    const kind = STEP_KIND[s.tool] ?? '기타'
+    count.set(kind, (count.get(kind) ?? 0) + 1)
+  }
+
+  return KIND_ORDER.filter(k => count.has(k))
+    .map(k => `${k} ${count.get(k)}`)
+    .join(' · ')
 }
 
 function summary(text: string): string {
@@ -424,6 +460,17 @@ function advise(ctx: number | undefined, wrapped: boolean, compactions: number):
 // 이 세션에서 압축한 횟수(메인 대화만). 클리어하면 0으로 돌아간다.
 let compactions = 0
 
+// 지금 진행 중인 요청(턴). 메인 대화의 턴만 센다.
+let currentTurn: string | null = null
+
+// 지금 요청에서 바꾼 파일을 그 요청에 적어 둔다. 지난 작업을 누르면 이 목록으로 좁혀 본다.
+async function noteFile($: EngineInterface, path: string): Promise<void> {
+  const turnId = currentTurn
+  if (turnId === null) return
+  const name = shortPath(path)
+  await patchTurn($, turnId, t => (t.paths.includes(name) ? t : { ...t, paths: [...t.paths, name] }))
+}
+
 async function patchTurn($: EngineInterface, id: string, change: (turn: Turn) => Turn): Promise<void> {
   await update($, turns, list => list.map(t => (t.id === id ? change(t) : t)))
 }
@@ -542,8 +589,6 @@ export const register: Register = (on, options) => {
   shouldOpenPane = options.openPaneOnChange !== false
   shouldSuggest = options.suggestNextSteps !== false
 
-  // 지금 진행 중인 요청(턴). 메인 대화의 턴만 센다.
-  let currentTurn: string | null = null
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
@@ -577,6 +622,7 @@ export const register: Register = (on, options) => {
     if (ran.result.staged !== true) {
       const patch = ran.result.structuredPatch
       await record($, ran.result.filePath, patch, false, 0, hunksText(patch))
+      await noteFile($, ran.result.filePath)
     }
 
     return ran
@@ -593,6 +639,7 @@ export const register: Register = (on, options) => {
       const diffText =
         patch.length > 0 ? hunksText(patch) : isNew && content !== '' ? createdText(content) : ''
       await record($, ran.result.filePath, patch, isNew, isNew ? rows : 0, diffText)
+      await noteFile($, ran.result.filePath)
     }
 
     return ran
@@ -606,7 +653,7 @@ export const register: Register = (on, options) => {
         id: e.turnId,
         text: summary(e.text),
         startedAt: await $.clock.now(),
-        files: (await read($, changed)).length,
+        paths: [],
         steps: [],
       }
       await update($, turns, list => [...list, turn].slice(-TURNS_KEPT))
@@ -639,6 +686,8 @@ export const register: Register = (on, options) => {
       currentTurn = null
       suggestRun += 1
       await update($, turns, () => [])
+      await update($, openTurns, () => [])
+      await update($, fileFilter, () => null)
       await update($, suggestions, () => [])
       await update($, filledIdea, () => -1)
       await update($, isSuggesting, () => false)
@@ -678,12 +727,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const isMain = e.agentId === undefined
     if (isMain) {
-      const fileCount = (await read($, changed)).length
       await patchTurn($, e.turnId, t => ({
         ...t,
         ms: e.durationMs,
         reason: e.isAborted ? 'aborted' : e.reason,
-        files: Math.max(0, fileCount - t.files),
         // 끝났는데 결과가 오지 않은 단계는 중단된 것으로 본다.
         steps: t.steps.map(s => (s.status === 'run' ? { ...s, status: 'fail' as const } : s)),
       }))
@@ -1015,9 +1062,13 @@ export const register: Register = (on, options) => {
     const layout: 'wide' | 'list' = cols >= 72 ? 'wide' : 'list'
     const showPast = past.length > 0
 
+    // 추천을 고르면 바로 메시지로 보낸다. 작업 중이면 지금 작업이 끝난 뒤 보내진다.
     const fillIdea = async (i: number, idea: string) => {
-      const done = await $.prompt.fill({ text: idea, mode: 'replace' }).catch(() => undefined)
-      if (done !== undefined) await update($, filledIdea, () => i)
+      await update($, filledIdea, () => i)
+      await $.prompt.submit({ text: idea }).catch(async () => {
+        await update($, filledIdea, () => -1)
+        $.ui.toast('추천을 보내지 못했습니다.')
+      })
     }
 
     // 위젯(데스크톱 앱의 작은 창)에서는 한눈에 볼 것만: 상태 한 줄과 첫 추천.
@@ -1037,7 +1088,9 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const steps = last === undefined ? [] : last.steps
+    const unfolded = await read($, openTurns)
+    const filter = await read($, fileFilter)
+    const filterTurn = filter === null ? undefined : allTurns.find(t => t.id === filter)
 
     const icon = (status: Step['status']) =>
       status === 'run' ? (
@@ -1048,67 +1101,118 @@ export const register: Register = (on, options) => {
         <Text color="error">✗</Text>
       )
 
-    const turnState =
-      last === undefined
-        ? ''
-        : isRunning
-          ? `● 진행 중 · ${last.steps.length}단계`
-          : last.reason === 'aborted'
-            ? `■ 중단됨 · ${clock(last.ms ?? 0)}`
-            : `✓ 끝남 · ${clock(last.ms ?? 0)} · ${last.steps.length}단계`
+    const stepRow = (s: Step) => {
+      const time = s.status === 'run' ? '실행 중' : stepMs(s.ms ?? 0)
 
-    const listed = files
+      return (
+        <Box key={`step:${s.id}`} flexDirection="row" alignItems="flex-start" columnGap="sm">
+          <Box width={2} flexShrink={0}>
+            {icon(s.status)}
+          </Box>
+          <Box width={7} flexShrink={0}>
+            <Text weight="medium" size="footnote" wrap="wrap">
+              {s.tool}
+            </Text>
+          </Box>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+            <Text dimColor size="footnote" wrap="wrap">
+              {s.target === '' ? '–' : s.target}
+            </Text>
+            {isNarrow ? (
+              <Text dimColor tabular size="caption">
+                {time}
+              </Text>
+            ) : null}
+          </Box>
+          {isNarrow ? null : (
+            <Box flexShrink={0}>
+              <Text dimColor tabular size="caption">
+                {time}
+              </Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
+    // 요청(턴) 하나를 큰 틀로 보여 준다.
+    //  - 첫 줄: 상태와 요청 요약
+    //  - 둘째 줄: 걸린 시간, 갈래별 단계 수(수정 3 · 명령 2 …), 바꾼 파일 수
+    //  - 지금 실행 중인 단계는 접혀 있어도 보여 준다. 여러 개면 동시에(병렬로) 도는 중이다.
+    //  - 나머지 세부 단계는 접어 두고, [세부 단계 N개]를 누르면 펼친다.
+    const turnCard = (t: Turn, isCurrent: boolean) => {
+      const running = t.steps.filter(s => s.status === 'run')
+      const failed = t.steps.filter(s => s.status === 'fail').length
+      const isLive = t.ms === undefined
+      const isOpen = unfolded.includes(t.id)
+      const state = isLive
+        ? running.length > 1
+          ? `● ${running.length}개 동시 실행 중`
+          : '● 진행 중'
+        : t.reason === 'aborted'
+          ? `■ 중단됨 · ${clock(t.ms ?? 0)}`
+          : t.reason === 'error' || t.reason === 'refusal'
+            ? `■ 오류로 끝남 · ${clock(t.ms ?? 0)}`
+            : `✓ 끝남 · ${clock(t.ms ?? 0)}`
+      const stateColor = isLive ? 'warning' : t.reason === 'answer' ? 'success' : 'error'
+      const kinds = stepKinds(t.steps)
+      const meta = [kinds, failed > 0 ? `실패 ${failed}` : '']
+        .filter(x => x !== '')
+        .join(' · ')
+      const toggle = () =>
+        update($, openTurns, list => (isOpen ? list.filter(x => x !== t.id) : [...list, t.id]))
+
+      return (
+        <Box key={`turn:${t.id}`} flexDirection="column" marginBottom={1}>
+          <Text weight={isCurrent ? 'semibold' : 'regular'} wrap="wrap">
+            {t.text}
+          </Text>
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap="sm">
+            <Text weight="semibold" size="footnote" color={stateColor}>
+              {state}
+            </Text>
+            {meta === '' ? null : (
+              <Text dimColor size="footnote">
+                {meta}
+              </Text>
+            )}
+            {t.paths.length === 0 ? null : (
+              <Button
+                key={`files-of:${t.id}`}
+                label={filter === t.id ? `✓ 바꾼 파일 ${t.paths.length}개` : `바꾼 파일 ${t.paths.length}개 보기`}
+                plain
+                onPress={() => update($, fileFilter, current => (current === t.id ? null : t.id))}
+              />
+            )}
+          </Box>
+          {isLive && !isOpen ? running.map(stepRow) : null}
+          {t.steps.length === 0 ? null : (
+            <Button
+              key={`toggle:${t.id}`}
+              label={isOpen ? '▾ 세부 단계 접기' : `▸ 세부 단계 ${t.steps.length}개`}
+              plain
+              dimColor
+              onPress={toggle}
+            />
+          )}
+          {isOpen ? (
+            <Box flexDirection="column" paddingLeft={2}>
+              {t.steps.map(stepRow)}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    const listed = filterTurn === undefined ? files : files.filter(f => filterTurn.paths.includes(f.path))
     const addWidth = Math.max(2, ...listed.map(f => String(f.added).length)) + 1
     const removeWidth = Math.max(2, ...listed.map(f => String(f.removed).length)) + 1
 
     return (
       <Box flexDirection="column">
         <Box key="work" flexDirection="column">
-          {last === undefined ? (
-            <Text dimColor>아직 기록된 작업이 없습니다.</Text>
-          ) : (
-            <Box flexDirection="column">
-              <Text weight="semibold" color={isRunning ? 'warning' : last.reason === 'aborted' ? 'error' : 'success'}>
-                {turnState}
-              </Text>
-              <Text dimColor wrap="wrap">
-                {last.text}
-              </Text>
-            </Box>
-          )}
-          {steps.map(s => {
-            const time = s.status === 'run' ? '실행 중' : stepMs(s.ms ?? 0)
-
-            return (
-              <Box key={`step:${s.id}`} flexDirection="row" alignItems="flex-start" columnGap="sm">
-                <Box width={2} flexShrink={0}>
-                  {icon(s.status)}
-                </Box>
-                <Box width={7} flexShrink={0}>
-                  <Text weight="medium" size="footnote" wrap="wrap">
-                    {s.tool}
-                  </Text>
-                </Box>
-                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
-                  <Text dimColor size="footnote" wrap="wrap">
-                    {s.target === '' ? '–' : s.target}
-                  </Text>
-                  {isNarrow ? (
-                    <Text dimColor tabular size="caption">
-                      {time}
-                    </Text>
-                  ) : null}
-                </Box>
-                {isNarrow ? null : (
-                  <Box flexShrink={0}>
-                    <Text dimColor tabular size="caption">
-                      {time}
-                    </Text>
-                  </Box>
-                )}
-              </Box>
-            )
-          })}
+          <Text weight="semibold">{isRunning ? '지금 작업' : '마지막 작업'}</Text>
+          {last === undefined ? <Text dimColor>아직 기록된 작업이 없습니다.</Text> : turnCard(last, true)}
 
           <Box key="ideas-head" flexDirection="row" marginTop={1} columnGap="sm" alignItems="center">
             <Text weight="semibold">다음 할 일 추천</Text>
@@ -1118,7 +1222,7 @@ export const register: Register = (on, options) => {
               </Text>
             ) : ideas.length > 0 && !isNarrow ? (
               <Text dimColor size="caption">
-                {`누르거나 1–${ideas.length} 키로 입력창에 넣기`}
+                {`누르거나 1–${ideas.length} 키로 바로 보내기`}
               </Text>
             ) : null}
           </Box>
@@ -1169,7 +1273,7 @@ export const register: Register = (on, options) => {
                   </Button>
                   {filled === i ? (
                     <Text dimColor size="caption">
-                      입력창에 넣음
+                      보냄
                     </Text>
                   ) : null}
                 </Box>
@@ -1179,28 +1283,10 @@ export const register: Register = (on, options) => {
 
           {!showPast ? null : (
             <Box key="past-head" marginTop={1}>
-              <Text weight="semibold">지난 작업</Text>
+              <Text weight="semibold">{`지난 작업 ${past.length}개`}</Text>
             </Box>
           )}
-          {(showPast ? past : []).map(t => (
-            <Box key={`turn:${t.id}`} flexDirection="row" alignItems="flex-start" columnGap="sm">
-              <Box width={2} flexShrink={0}>
-                {t.reason === 'aborted' || t.reason === 'error' ? (
-                  <Text color="error">■</Text>
-                ) : (
-                  <Text dimColor>✓</Text>
-                )}
-              </Box>
-              <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
-                <Text size="footnote" wrap="wrap">
-                  {t.text}
-                </Text>
-                <Text dimColor tabular size="caption">
-                  {`${clock(t.ms ?? 0)} · ${t.steps.length}단계${t.files > 0 ? ` · 파일 ${t.files}` : ''}`}
-                </Text>
-              </Box>
-            </Box>
-          ))}
+          {(showPast ? past : []).map(t => turnCard(t, false))}
         </Box>
 
         <Box key="divider" height={1} overflow="hidden">
@@ -1212,9 +1298,9 @@ export const register: Register = (on, options) => {
         <Box key="files" flexDirection="column">
           <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap="md">
             <Box flexDirection="row" alignItems="center" columnGap="sm">
-              <Text weight="semibold">변경 파일</Text>
-              {files.length === 0 ? null : (
-                <Text dimColor tabular size="footnote">{`${files.length}개`}</Text>
+              <Text weight="semibold">{filterTurn === undefined ? '변경 파일' : '이 작업에서 바꾼 파일'}</Text>
+              {listed.length === 0 ? null : (
+                <Text dimColor tabular size="footnote">{`${listed.length}개`}</Text>
               )}
               {files.length === 0 ? null : (
                 <Text tabular size="footnote" color="success">{`+${sum.added}`}</Text>
@@ -1226,6 +1312,9 @@ export const register: Register = (on, options) => {
               )}
             </Box>
             <Box flexDirection="row" columnGap="sm" flexShrink={0}>
+            {filterTurn === undefined ? null : (
+              <Button key="files-all" label="전체 보기" onPress={() => update($, fileFilter, () => null)} />
+            )}
             {files.length === 0 ? null : (
               <Button
                 key="clear"
@@ -1235,11 +1324,17 @@ export const register: Register = (on, options) => {
                   await update($, diffs, () => [])
                   await update($, selected, () => null)
                   await update($, fileText, () => null)
+                  await update($, fileFilter, () => null)
                 }}
               />
             )}
             </Box>
           </Box>
+          {filterTurn === undefined ? null : (
+            <Text dimColor size="footnote" wrap="wrap">
+              {`"${filterTurn.text}" 작업에서 바꾼 파일입니다. 줄 수는 세션 전체 합계입니다.`}
+            </Text>
+          )}
           {files.length === 0 ? <Text dimColor size="footnote">아직 변경된 파일이 없습니다.</Text> : null}
           {listed.map(f => {
             const isOutside = /^([A-Za-z]:)?\//.test(f.path)
