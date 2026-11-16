@@ -290,14 +290,22 @@ function level(percent: number): Level {
   return 'success'
 }
 
-function meters(u: Usage, now: number): Meter[] {
-  const out: Meter[] = [{ key: 'context', label: '컨텍스트', percent: contextPercent(u), note: '' }]
-  for (const l of u.rateLimits) {
+// 띠에 늘 있는 막대. 값을 아직 못 받았으면 "–"로 자리를 지킨다.
+const FIXED_KINDS = ['five_hour', 'seven_day'] as const
+
+function meters(u: Usage | null, now: number): Meter[] {
+  const out: Meter[] = [
+    { key: 'context', label: '컨텍스트', percent: u === null ? undefined : contextPercent(u), note: '' },
+  ]
+  const limits = u?.rateLimits ?? []
+  const kinds = [...FIXED_KINDS, ...limits.map(l => l.kind).filter(k => !FIXED_KINDS.includes(k as never))]
+  for (const kind of kinds) {
+    const l = limits.find(x => x.kind === kind)
     out.push({
-      key: l.kind,
-      label: kindLabel(l.kind),
-      percent: Math.round(l.percentUsed),
-      note: untilShort(l.resetsAt, now),
+      key: kind,
+      label: kindLabel(kind),
+      percent: l === undefined ? undefined : Math.round(l.percentUsed),
+      note: l === undefined ? '' : untilShort(l.resetsAt, now),
     })
   }
 
@@ -500,6 +508,7 @@ async function patchTurn($: EngineInterface, id: string, change: (turn: Turn) =>
 const warned = new Map<string, number>()
 let cwd = ''
 let hasOpenedPane = false
+let ticker: { cancel(): void } | undefined
 
 function once(key: string, step: number): boolean {
   const last = warned.get(key) ?? 0
@@ -523,8 +532,29 @@ async function alert($: EngineInterface, text: string): Promise<void> {
   if (sent === undefined || !sent.isSent) $.ui.toast(text, { timeoutMs: 8000 })
 }
 
-async function show($: EngineInterface, u: Usage): Promise<void> {
+// 초기화 시각이 지난 한도는 엔진이 새 값을 받기 전까지 예전 사용률을 그대로 들고 있다.
+// 그 시각이 지났으면 새 창이 열린 것이므로 0%로 본다.
+function afterReset(l: Usage['rateLimits'][number], now: number): Usage['rateLimits'][number] {
+  if (l.resetsAt === undefined) return { ...l }
+  const at = Date.parse(l.resetsAt)
+  if (Number.isNaN(at) || at > now) return { ...l }
+  const { resetsAt: _gone, ...rest } = l
+
+  return { ...rest, percentUsed: 0 }
+}
+
+// 화면을 지금 상태로 맞춘다: 한도 초기화 시각, 남은 시간 표시, 압축·클리어 뒤의 컨텍스트.
+async function refresh($: EngineInterface): Promise<void> {
+  try {
+    await show($, await $.session.usage())
+  } catch {
+    // 사용량을 못 읽으면 지난 값을 그대로 둔다.
+  }
+}
+
+async function show($: EngineInterface, given: Usage): Promise<void> {
   const now = await $.clock.now()
+  const u: Usage = { ...given, rateLimits: given.rateLimits.map(l => afterReset(l, now)) }
   const snapshot: Usage = {
     context: { ...u.context },
     rateLimits: u.rateLimits.map(l => ({ ...l })),
@@ -619,7 +649,23 @@ export const register: Register = (on, options) => {
       name: 'session-hud',
       description: '사용량·비용·변경 파일을 자세히 보여 주고 작업 패널을 연다',
     })
-    void $.session.usage().then(u => show($, u))
+    void refresh($)
+
+    // 패널은 세션 내내 떠 있고 내용만 바뀐다. 다시 불러온 뒤에도 같은 패널을 다시 연다.
+    if (shouldOpenPane) {
+      hasOpenedPane = true
+      void $.ui.open({ id: PANE, title: PANE_TITLE })
+    }
+
+    // 1분마다 다시 읽어 남은 시간과 초기화된 한도를 띠에 반영한다.
+    // 타이머를 못 얻어도 세션 시작은 막지 않는다.
+    ticker?.cancel()
+    ticker = undefined
+    try {
+      ticker = $.clock.every(60_000, () => void refresh($))
+    } catch {
+      // 타이머 없이도 다음 요청 때 값이 바뀐다.
+    }
 
     return next(e)
   })
@@ -702,6 +748,8 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && e.trigger !== 'precompute' && done.skip === undefined) {
       compactions += 1
       await update($, dismissed, () => '')
+      // 압축으로 줄어든 컨텍스트를 다음 요청까지 기다리지 않고 보여 준다.
+      void refresh($)
     }
 
     return done
@@ -782,14 +830,15 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const u = await read($, latest)
-    if (e.props.hasSurvey || u === null) return next(e)
+    if (e.props.hasSurvey) return next(e)
 
     const now = await $.clock.now()
     const files = await read($, changed)
     const sum = totals(files)
+    const taskCount = (await read($, turns)).length
     const { Box, Button, Text } = $.ui.resolve(e)
     const isTerminal = e.surface === 'terminal'
-    const advice = advise(contextPercent(u), await read($, isWrapped), compactions)
+    const advice = u === null ? null : advise(contextPercent(u), await read($, isWrapped), compactions)
     const showAdvice = advice !== null && (await read($, dismissed)) !== advice.key
 
     // 권장한 일을 실행한다. 버튼을 누른 것이 확인이고, 클리어는 대화를 잃으니 한 번 더 묻는다.
@@ -848,23 +897,19 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
-        {files.length === 0 ? null : (
-          <Box key="files" flexDirection="row" alignItems="center" columnGap="sm" flexShrink={0}>
-            <Button
-              key="open-files"
-              label={`변경 ${files.length}개`}
-              plain
-              onPress={async () => {
-                hasOpenedPane = true
-                await $.ui.open({ id: PANE, title: PANE_TITLE, focus: true })
-              }}
-            />
-            <Text weight="bold" tabular color="success">{`+${sum.added}`}</Text>
-            {sum.removed === 0 ? null : (
-              <Text weight="bold" tabular color="error">{`−${sum.removed}`}</Text>
-            )}
-          </Box>
-        )}
+        <Box key="files" flexDirection="row" alignItems="center" columnGap="sm" flexShrink={0}>
+          <Button
+            key="open-files"
+            label={`작업 ${taskCount}개 · 변경 ${files.length}개`}
+            plain
+            onPress={async () => {
+              hasOpenedPane = true
+              await $.ui.open({ id: PANE, title: PANE_TITLE, focus: true })
+            }}
+          />
+          <Text weight="bold" tabular color="success" dimColor={sum.added === 0}>{`+${sum.added}`}</Text>
+          <Text weight="bold" tabular color="error" dimColor={sum.removed === 0}>{`−${sum.removed}`}</Text>
+        </Box>
         {!showAdvice || advice === null ? null : (
           <Box key="advice" width="100%" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap="sm">
             <Text weight="semibold" color={advice.isUrgent ? 'error' : 'warning'}>
@@ -1333,10 +1378,13 @@ export const register: Register = (on, options) => {
             ))
           )}
 
-          {!showPast ? null : (
-            <Box key="past-head" marginTop={1}>
-              <Text weight="semibold">{`지난 작업 ${past.length}개`}</Text>
-            </Box>
+          <Box key="past-head" marginTop={1}>
+            <Text weight="semibold">{`지난 작업 ${past.length}개`}</Text>
+          </Box>
+          {showPast ? null : (
+            <Text key="past-none" dimColor size="footnote">
+              지난 작업이 없습니다.
+            </Text>
           )}
           {/* 지난 작업은 최근 몇 개만 보이고, 나머지는 접어 둔다. */}
           {(showPast ? (isAllPast ? past : past.slice(0, PAST_SHOWN)) : []).map(t => turnCard(t, false))}
@@ -1363,17 +1411,11 @@ export const register: Register = (on, options) => {
               <Text weight="semibold">
                 {filterTurn === undefined ? '변경 파일' : `${turnNo(filterTurn) || '이'} 작업에서 바꾼 파일`}
               </Text>
-              {listed.length === 0 ? null : (
-                <Text dimColor tabular size="footnote">{`${listed.length}개`}</Text>
-              )}
-              {files.length === 0 ? null : (
-                <Text tabular size="footnote" color="success">{`+${sum.added}`}</Text>
-              )}
-              {files.length === 0 ? null : (
-                <Text tabular size="footnote" color="error" dimColor={sum.removed === 0}>
-                  {`−${sum.removed}`}
-                </Text>
-              )}
+              <Text dimColor tabular size="footnote">{`${listed.length}개`}</Text>
+              <Text tabular size="footnote" color="success" dimColor={sum.added === 0}>{`+${sum.added}`}</Text>
+              <Text tabular size="footnote" color="error" dimColor={sum.removed === 0}>
+                {`−${sum.removed}`}
+              </Text>
             </Box>
             <Box flexDirection="row" columnGap="sm" flexShrink={0}>
             {filterTurn === undefined ? null : (

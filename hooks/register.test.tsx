@@ -165,6 +165,112 @@ test('the band draws every meter on every surface', async ($, on) => {
   }
 })
 
+test('a limit past its reset shows 0%, and a session with only tasks still gets a pane button and a reopened pane', async ($, on) => {
+  const opened: string[] = []
+  const now = Date.parse('2026-11-16T10:00:00Z')
+  on('command.register', () => ({ value: { command: 'session-hud' } }))
+  on('ui.open', (_, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'client' as const } }))
+  on('clock.now', () => ({ value: now }))
+  const limits = [
+    { kind: 'five_hour', percentUsed: 97, resetsAt: '2026-11-16T09:59:00Z' },
+    { kind: 'seven_day', percentUsed: 40, resetsAt: '2026-11-20T00:00:00Z' },
+  ]
+  on('clock.every', () => ({ value: undefined }))
+  on('session.usage', () => ({ value: { ...USAGE, rateLimits: limits } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+
+  await $.turn.start({ text: 'README 바꿔 줘', turnId: 't1' })
+  await $.session.measure({
+    context: USAGE.context,
+    rateLimits: limits,
+    cost: USAGE.cost,
+    changed: ['context', 'rateLimits', 'cost'],
+  })
+
+  // 다시 불러온 뒤(session.start)에도 작업 기록이 있으면 패널을 다시 연다.
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  expect(opened).toContain('work')
+  opened.length = 0
+
+  const ui = await $.ui.mount({
+    plugin: 'session-hud',
+    surface: 'desktop',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    props: {
+      hasSurvey: false,
+      isCollapsed: false,
+      isWorking: false,
+      maxRows: 10,
+      bodyColumns: 100,
+      scroll: { offset: 0, bodyRows: 10 },
+      view: {},
+    },
+  })
+  // 초기화 시각이 지난 5시간 한도는 0%로, 아직인 7일 한도는 그대로.
+  expect(await ui.find({ type: 'Text', text: /^97%$/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^0%$/ }))?.text).toBe('0%')
+  expect((await ui.find({ type: 'Text', text: /^40%$/ }))?.text).toBe('40%')
+
+  // 바뀐 파일이 없어도 작업이 있으면 패널을 여는 칩이 있다.
+  await ui.press({ key: 'open-files' })
+  expect(opened).toContain('work')
+  await ui.unmount()
+})
+
+test('every item is on screen from the start, with placeholders until values arrive', async ($, on) => {
+  const opened: string[] = []
+  on('command.register', () => ({ value: { command: 'session-hud' } }))
+  on('ui.open', (_, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true } }
+  })
+  on('clock.now', () => ({ value: 0 }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  // 기록이 없어도 세션이 시작되면 패널이 뜬다.
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  expect(opened).toContain('work')
+
+  const band = await $.ui.mount({
+    plugin: 'session-hud',
+    surface: 'desktop',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    props: {
+      hasSurvey: false,
+      isCollapsed: false,
+      isWorking: false,
+      maxRows: 10,
+      bodyColumns: 100,
+      scroll: { offset: 0, bodyRows: 10 },
+      view: {},
+    },
+  })
+  // 값이 없어도 컨텍스트·5시간·7일 막대와 작업 칩이 자리를 지킨다.
+  expect(await band.find({ type: 'Text', text: '컨텍스트' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '5시간' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '7일' })).toBeDefined()
+  expect((await band.find({ key: 'open-files' }))?.props.label).toBe('작업 0개 · 변경 0개')
+  await band.unmount()
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await pane.find({ type: 'Text', text: '지난 작업 0개' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '아직 변경된 파일이 없습니다.' })).toBeDefined()
+  await pane.unmount()
+})
+
 test('budget, context and limit warnings fire once, and a Fable window gets its own label', { options: { costBudgetUsd: 5 } }, async ($, on) => {
   const toasts: string[] = []
   const notices: string[] = []

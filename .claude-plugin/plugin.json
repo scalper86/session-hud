@@ -24,7 +24,7 @@
     "openPaneOnChange": {
       "type": "boolean",
       "title": "작업 패널 자동 열기",
-      "description": "세션에서 처음 파일이 바뀔 때 작업 패널을 엽니다.",
+      "description": "세션이 시작될 때 작업 패널을 엽니다. 패널은 세션 내내 떠 있고 내용만 바뀝니다.",
       "default": true
     },
     "suggestNextSteps": {
