@@ -17,18 +17,18 @@ Bash 명령(`git`, `sed` 등)으로 바뀐 파일은 변경 파일 패널에 잡
 터미널 세션의 프롬프트에서:
 
 ```
-/plugin install session-hud --marketplace scalper86/usage_meter
+/plugin install session-hud --marketplace scalper86/session-hud
 ```
 
 셸에서:
 
 ```
-claude plugin install session-hud --marketplace scalper86/usage_meter
+claude plugin install session-hud --marketplace scalper86/session-hud
 ```
 
 `Add marketplace?`에는 `y`로 답하고, 범위는 user를 고릅니다.
 
-`/plugin`이 동작하지 않는 데스크톱 앱에서는 프롬프트 입력창 옆 `+` → Plugins → Add marketplace에 `scalper86/usage_meter`를 넣은 뒤 Add plugin을 누릅니다.
+`/plugin`이 동작하지 않는 데스크톱 앱에서는 프롬프트 입력창 옆 `+` → Plugins → Add marketplace에 `scalper86/session-hud`를 넣은 뒤 Add plugin을 누릅니다.
 
 설치한 뒤 새로 시작하는 세션부터 적용됩니다.
 
@@ -74,5 +74,5 @@ claude plugin marketplace remove usage-meter
 ```
 
 ```
-claude plugin install session-hud --marketplace scalper86/usage_meter
+claude plugin install session-hud --marketplace scalper86/session-hud
 ```
