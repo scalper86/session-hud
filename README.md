@@ -1,0 +1,28 @@
+# usage-meter
+
+Claude Code의 사용량을 프롬프트 입력창 바로 위에 색 띠로 보여 주는 모드입니다.
+
+- 컨텍스트 사용률, 5시간·7일 사용 한도, 이 세션 비용을 막대와 퍼센트로 표시합니다.
+- 80% 미만은 초록, 80% 이상은 노랑, 90% 이상은 빨강으로 바뀝니다.
+- 한도가 80%, 90%를 넘는 순간 한 번씩 알림을 띄웁니다.
+- `/usage-meter` 명령으로 토큰 수와 초기화 시각까지 자세히 볼 수 있습니다.
+
+## 설치
+
+터미널 세션의 프롬프트에서:
+
+```
+/plugin install usage-meter --marketplace scalper86/usage_meter
+```
+
+셸에서:
+
+```
+claude plugin install usage-meter --marketplace scalper86/usage_meter
+```
+
+`Add marketplace?`에는 `y`로 답하고, 범위는 user를 고릅니다.
+
+`/plugin`이 동작하지 않는 데스크톱 앱에서는 프롬프트 입력창 옆 `+` → Plugins → Add marketplace에 `scalper86/usage_meter`를 넣은 뒤 Add plugin을 누릅니다.
+
+설치한 뒤 새로 시작하는 세션부터 띠가 보입니다.
