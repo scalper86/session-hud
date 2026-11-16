@@ -11,8 +11,8 @@
     },
     "contextWarnPercent": {
       "type": "number",
-      "title": "컨텍스트 경고 기준 (%)",
-      "description": "컨텍스트 사용률이 이 값을 넘으면 알립니다. 0이면 끕니다.",
+      "title": "압축 권장 기준 (%)",
+      "description": "컨텍스트 사용률이 이 값을 넘으면 띠에 압축(또는 클리어) 권장과 실행 버튼을 띄웁니다. 0이면 끕니다.",
       "default": 80
     },
     "notifyAfterSeconds": {
@@ -23,8 +23,14 @@
     },
     "openPaneOnChange": {
       "type": "boolean",
-      "title": "변경 파일 패널 자동 열기",
-      "description": "세션에서 처음 파일이 바뀔 때 변경 파일 패널을 엽니다.",
+      "title": "작업 패널 자동 열기",
+      "description": "세션에서 처음 파일이 바뀔 때 작업 패널을 엽니다.",
+      "default": true
+    },
+    "suggestNextSteps": {
+      "type": "boolean",
+      "title": "다음 할 일 추천",
+      "description": "작업이 끝날 때마다 작은 모델(haiku)로 다음 할 일을 최대 3개 추천합니다. 그 호출도 세션 비용에 더해집니다.",
       "default": true
     }
   }
