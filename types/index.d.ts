@@ -29,11 +29,16 @@ export type Step = {
 
 export type Turn = {
   id: string
+  // 세션 안 작업 번호(#1, #2 …). 클리어하면 1부터 다시.
+  no?: number
   text: string
   startedAt: number
   ms?: number
   reason?: string
   paths: string[]
+  // 이 작업에서 더하고 지운 줄 수.
+  added?: number
+  removed?: number
   steps: Step[]
 }
 
@@ -49,6 +54,7 @@ declare module 'claude-code' {
       fileText: { path: string; text: string } | null
       turns: Shaped<Turn[]>
       openTurns: Shaped<string[]>
+      showAllPast: boolean
       fileFilter: string | null
       suggestions: Shaped<string[]>
       isSuggesting: boolean

@@ -385,13 +385,56 @@ test('pressing a past task narrows the file list to the files it changed', { opt
     expect(await ui.find({ key: 'open:src/login.ts' })).toBeDefined()
     expect(await ui.find({ key: 'open:src/header.tsx' })).toBeDefined()
 
+    // 작업마다 번호가 붙고, 변경 안내는 파일 수와 줄 수만 보여 준다.
+    expect((await ui.find({ type: 'Text', text: /^#1$/ }))?.text).toBe('#1')
+    expect((await ui.find({ key: 'files-of:f1' }))?.props.label).toBe('파일 1개 +1 −1')
+
     await ui.press({ key: 'files-of:f1' })
-    expect((await ui.find({ type: 'Text', text: /바꾼 파일$/ }))?.text).toBe('이 작업에서 바꾼 파일')
+    expect((await ui.find({ type: 'Text', text: /바꾼 파일$/ }))?.text).toBe('#1 작업에서 바꾼 파일')
+    expect((await ui.find({ key: 'files-of:f1' }))?.props.label).toBe('✓ 파일 1개 +1 −1')
     expect(await ui.find({ key: 'open:src/login.ts' })).toBeDefined()
     expect(await ui.find({ key: 'open:src/header.tsx' })).toBeUndefined()
 
     await ui.press({ key: 'files-all' })
     expect(await ui.find({ key: 'open:src/header.tsx' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+// 지난 작업은 최근 3개만 보이고, 나머지는 접어 둔다.
+test('only the three latest past tasks show until the rest are unfolded', { options: { suggestNextSteps: false } }, async ($, on) => {
+  let now = 0
+  on('clock.now', () => ({ value: (now += 100) }))
+  on('command.register', () => ({ value: { command: 'session-hud' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'client' as const } }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  for (let i = 1; i <= 6; i += 1) {
+    await $.turn.start({ text: `요청 ${i}번`, turnId: `t${i}` })
+    await $.turn.complete({ answer: '됐습니다.', durationMs: 1000, isAborted: false, turnId: `t${i}`, reason: 'answer' })
+  }
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    // 마지막 작업 #6, 지난 작업 5개 중 최근 3개(#5, #4, #3)만 보인다.
+    expect((await ui.find({ type: 'Text', text: /^지난 작업/ }))?.text).toBe('지난 작업 5개')
+    for (const i of [6, 5, 4, 3]) expect(await ui.find({ type: 'Text', text: `요청 ${i}번` })).toBeDefined()
+    for (const i of [2, 1]) expect(await ui.find({ type: 'Text', text: `요청 ${i}번` })).toBeUndefined()
+    expect((await ui.find({ key: 'past-more' }))?.props.label).toBe('▸ 이전 작업 2개 더 보기')
+
+    await ui.press({ key: 'past-more' })
+    for (const i of [2, 1]) expect(await ui.find({ type: 'Text', text: `요청 ${i}번` })).toBeDefined()
+    expect((await ui.find({ key: 'past-more' }))?.props.label).toBe('▾ 이전 작업 접기')
+
+    await ui.press({ key: 'past-more' })
+    expect(await ui.find({ type: 'Text', text: '요청 1번' })).toBeUndefined()
     await ui.unmount()
   }
 })

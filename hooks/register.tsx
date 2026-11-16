@@ -46,6 +46,9 @@ const suggestions = atom({ plugin: 'session-hud', key: 'suggestions' } as const,
 const isSuggesting = atom({ plugin: 'session-hud', key: 'isSuggesting' } as const, false)
 // 세부 단계를 펼쳐 둔 요청(턴)들. 기본은 접어 두고 큰 틀만 보여 준다.
 const openTurns = atom({ plugin: 'session-hud', key: 'openTurns' } as const, [], { shape: 'open-turns-1' })
+// 지난 작업을 모두 펼쳐 보는지. 기본은 최근 PAST_SHOWN개만 보이고 나머지는 접는다.
+const showAllPast = atom({ plugin: 'session-hud', key: 'showAllPast' } as const, false)
+const PAST_SHOWN = 3
 // 보낸 추천의 번호(-1이면 아직 없음). 누른 추천에 ✓를 붙인다.
 const filledIdea = atom({ plugin: 'session-hud', key: 'filledIdea' } as const, -1)
 // 방금 끝난 작업이 일단락됐는지(추천 모델의 판단). 클리어 권장에 쓴다.
@@ -110,6 +113,19 @@ function stepKinds(steps: readonly Step[]): string {
   return KIND_ORDER.filter(k => count.has(k))
     .map(k => `${k} ${count.get(k)}`)
     .join(' · ')
+}
+
+// 작업 번호 표시: "#3". 번호가 없는 예전 기록은 빈 문자열.
+function turnNo(t: Turn): string {
+  return t.no === undefined ? '' : `#${t.no}`
+}
+
+// 작업의 변경 안내: "파일 2개 +22 −3". 줄 수가 없는 예전 기록은 파일 수만.
+function turnChanges(t: Turn): string {
+  const files = `파일 ${t.paths.length}개`
+  if (t.added === undefined && t.removed === undefined) return files
+
+  return `${files} +${t.added ?? 0} −${t.removed ?? 0}`
 }
 
 function summary(text: string): string {
@@ -463,12 +479,17 @@ let compactions = 0
 // 지금 진행 중인 요청(턴). 메인 대화의 턴만 센다.
 let currentTurn: string | null = null
 
-// 지금 요청에서 바꾼 파일을 그 요청에 적어 둔다. 지난 작업을 누르면 이 목록으로 좁혀 본다.
-async function noteFile($: EngineInterface, path: string): Promise<void> {
+// 지금 요청에서 바꾼 파일과 줄 수를 그 요청에 적어 둔다. 작업의 변경 안내를 누르면 이 목록으로 좁혀 본다.
+async function noteFile($: EngineInterface, path: string, count: { added: number; removed: number }): Promise<void> {
   const turnId = currentTurn
   if (turnId === null) return
   const name = shortPath(path)
-  await patchTurn($, turnId, t => (t.paths.includes(name) ? t : { ...t, paths: [...t.paths, name] }))
+  await patchTurn($, turnId, t => ({
+    ...t,
+    paths: t.paths.includes(name) ? t.paths : [...t.paths, name],
+    added: (t.added ?? 0) + count.added,
+    removed: (t.removed ?? 0) + count.removed,
+  }))
 }
 
 async function patchTurn($: EngineInterface, id: string, change: (turn: Turn) => Turn): Promise<void> {
@@ -550,7 +571,7 @@ async function record(
   isNew: boolean,
   fallbackAdded: number,
   diffText: string,
-): Promise<void> {
+): Promise<{ added: number; removed: number }> {
   const count = countPatch(patch)
   const added = count.added === 0 && count.removed === 0 ? fallbackAdded : count.added
   const name = shortPath(path)
@@ -580,6 +601,8 @@ async function record(
     hasOpenedPane = true
     void $.ui.open({ id: PANE, title: PANE_TITLE })
   }
+
+  return { added, removed: count.removed }
 }
 
 export const register: Register = (on, options) => {
@@ -621,8 +644,8 @@ export const register: Register = (on, options) => {
     if (ran.deny !== undefined || ran.isError === true) return ran
     if (ran.result.staged !== true) {
       const patch = ran.result.structuredPatch
-      await record($, ran.result.filePath, patch, false, 0, hunksText(patch))
-      await noteFile($, ran.result.filePath)
+      const count = await record($, ran.result.filePath, patch, false, 0, hunksText(patch))
+      await noteFile($, ran.result.filePath, count)
     }
 
     return ran
@@ -638,8 +661,8 @@ export const register: Register = (on, options) => {
       const patch = ran.result.structuredPatch
       const diffText =
         patch.length > 0 ? hunksText(patch) : isNew && content !== '' ? createdText(content) : ''
-      await record($, ran.result.filePath, patch, isNew, isNew ? rows : 0, diffText)
-      await noteFile($, ran.result.filePath)
+      const count = await record($, ran.result.filePath, patch, isNew, isNew ? rows : 0, diffText)
+      await noteFile($, ran.result.filePath, count)
     }
 
     return ran
@@ -649,14 +672,20 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       currentTurn = e.turnId
-      const turn: Turn = {
-        id: e.turnId,
-        text: summary(e.text),
-        startedAt: await $.clock.now(),
-        paths: [],
-        steps: [],
-      }
-      await update($, turns, list => [...list, turn].slice(-TURNS_KEPT))
+      const startedAt = await $.clock.now()
+      await update($, turns, list => {
+        const prev = list[list.length - 1]
+        const turn: Turn = {
+          id: e.turnId,
+          no: (prev?.no ?? list.length) + 1,
+          text: summary(e.text),
+          startedAt,
+          paths: [],
+          steps: [],
+        }
+
+        return [...list, turn].slice(-TURNS_KEPT)
+      })
       suggestRun += 1
       await update($, suggestions, () => [])
       await update($, filledIdea, () => -1)
@@ -687,6 +716,7 @@ export const register: Register = (on, options) => {
       suggestRun += 1
       await update($, turns, () => [])
       await update($, openTurns, () => [])
+      await update($, showAllPast, () => false)
       await update($, fileFilter, () => null)
       await update($, suggestions, () => [])
       await update($, filledIdea, () => -1)
@@ -1089,6 +1119,7 @@ export const register: Register = (on, options) => {
     }
 
     const unfolded = await read($, openTurns)
+    const isAllPast = await read($, showAllPast)
     const filter = await read($, fileFilter)
     const filterTurn = filter === null ? undefined : allTurns.find(t => t.id === filter)
 
@@ -1164,9 +1195,18 @@ export const register: Register = (on, options) => {
 
       return (
         <Box key={`turn:${t.id}`} flexDirection="column" marginBottom={1}>
-          <Text weight={isCurrent ? 'semibold' : 'regular'} wrap="wrap">
-            {t.text}
-          </Text>
+          <Box flexDirection="row" alignItems="flex-start" columnGap="sm">
+            {t.no === undefined ? null : (
+              <Box flexShrink={0}>
+                <Text dimColor tabular weight="semibold">{turnNo(t)}</Text>
+              </Box>
+            )}
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+              <Text weight={isCurrent ? 'semibold' : 'regular'} wrap="wrap">
+                {t.text}
+              </Text>
+            </Box>
+          </Box>
           <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap="sm">
             <Text weight="semibold" size="footnote" color={stateColor}>
               {state}
@@ -1177,9 +1217,10 @@ export const register: Register = (on, options) => {
               </Text>
             )}
             {t.paths.length === 0 ? null : (
+              // 이 작업의 변경 안내(파일 수와 줄 수). 누르면 아래 변경 파일을 이 작업 것으로 좁힌다.
               <Button
                 key={`files-of:${t.id}`}
-                label={filter === t.id ? `✓ 바꾼 파일 ${t.paths.length}개` : `바꾼 파일 ${t.paths.length}개 보기`}
+                label={`${filter === t.id ? '✓ ' : ''}${turnChanges(t)}`}
                 plain
                 onPress={() => update($, fileFilter, current => (current === t.id ? null : t.id))}
               />
@@ -1286,7 +1327,17 @@ export const register: Register = (on, options) => {
               <Text weight="semibold">{`지난 작업 ${past.length}개`}</Text>
             </Box>
           )}
-          {(showPast ? past : []).map(t => turnCard(t, false))}
+          {/* 지난 작업은 최근 몇 개만 보이고, 나머지는 접어 둔다. */}
+          {(showPast ? (isAllPast ? past : past.slice(0, PAST_SHOWN)) : []).map(t => turnCard(t, false))}
+          {past.length > PAST_SHOWN ? (
+            <Button
+              key="past-more"
+              label={isAllPast ? '▾ 이전 작업 접기' : `▸ 이전 작업 ${past.length - PAST_SHOWN}개 더 보기`}
+              plain
+              dimColor
+              onPress={() => update($, showAllPast, v => !v)}
+            />
+          ) : null}
         </Box>
 
         <Box key="divider" height={1} overflow="hidden">
@@ -1298,7 +1349,9 @@ export const register: Register = (on, options) => {
         <Box key="files" flexDirection="column">
           <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap="md">
             <Box flexDirection="row" alignItems="center" columnGap="sm">
-              <Text weight="semibold">{filterTurn === undefined ? '변경 파일' : '이 작업에서 바꾼 파일'}</Text>
+              <Text weight="semibold">
+                {filterTurn === undefined ? '변경 파일' : `${turnNo(filterTurn) || '이'} 작업에서 바꾼 파일`}
+              </Text>
               {listed.length === 0 ? null : (
                 <Text dimColor tabular size="footnote">{`${listed.length}개`}</Text>
               )}
@@ -1332,7 +1385,7 @@ export const register: Register = (on, options) => {
           </Box>
           {filterTurn === undefined ? null : (
             <Text dimColor size="footnote" wrap="wrap">
-              {`"${filterTurn.text}" 작업에서 바꾼 파일입니다. 줄 수는 세션 전체 합계입니다.`}
+              {`"${filterTurn.text}" · 이 작업의 변경 ${turnChanges(filterTurn)}. 아래 줄 수는 파일별 세션 전체 합계입니다.`}
             </Text>
           )}
           {files.length === 0 ? <Text dimColor size="footnote">아직 변경된 파일이 없습니다.</Text> : null}

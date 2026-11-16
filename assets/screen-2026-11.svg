@@ -82,10 +82,11 @@
 
   <!-- 마지막 작업 -->
   <text x="756" y="112" class="sb">마지막 작업</text>
-  <text x="756" y="138" class="sb">API 클라이언트에 재시도 로직을 넣고 헤더를 정리해 줘</text>
+  <text x="756" y="138" class="sb dim">#2</text>
+  <text x="782" y="138" class="sb">API 클라이언트에 재시도 로직을 넣고 헤더를 정리해 줘</text>
   <text x="756" y="162" class="small sb ok">✓ 끝남 · 2분 14초</text>
   <text x="866" y="162" class="small dim">수정 3 · 명령 2 · 읽기 4</text>
-  <text x="1018" y="162" class="small link">바꾼 파일 3개 보기</text>
+  <text x="1018" y="162" class="small link">파일 3개 +58 −12</text>
   <text x="756" y="186" class="small dim">▸ 세부 단계 9개</text>
 
   <!-- 다음 할 일 추천 -->
@@ -101,7 +102,8 @@
 
   <!-- 지난 작업 -->
   <text x="756" y="356" class="sb">지난 작업 1개</text>
-  <text x="756" y="382">테스트는 어떻게 돌리는지 알려 줘</text>
+  <text x="756" y="382" class="sb dim">#1</text>
+  <text x="782" y="382">테스트는 어떻게 돌리는지 알려 줘</text>
   <text x="756" y="406" class="small sb ok">✓ 끝남 · 18초</text>
   <text x="846" y="406" class="small dim">읽기 2 · 검색 1</text>
   <text x="756" y="430" class="small dim">▸ 세부 단계 3개</text>
